@@ -32,7 +32,7 @@ class TrainingDataset(Dataset):
         return self.features[i]
 
 def load_raw_dataset(split, args):
-    data_path = os.path.join('./data', args.dataset, '{}.jsonl'.format(split))
+    data_path = os.path.join('./outputs', args.dataset, '{}.jsonl'.format(split))
     dataset = []
 
     with open(data_path, 'r') as fr:
@@ -70,9 +70,7 @@ def get_label_tensor_answer_only(raw_label, raw_label_without_answer, tokenizer,
     label_ids += [-100] * (args.max_dec_length - len(label_ids))
 
     label_ids_without_answer = tokenizer.encode(raw_label_without_answer, add_special_tokens=False)
-    # label_ids_without_answer += [tokenizer.eos_token_id]
     label_ids_without_answer = label_ids_without_answer[:args.max_dec_length]
-    # label_ids_without_answer += [-100] * (args.max_dec_length - len(label_ids_without_answer))
 
     label_ids_answer_only = label_ids.copy()
     for idx in range(len(label_ids_without_answer)):
@@ -89,15 +87,9 @@ def format_input(context, choices=None, counterfactual=False, add_task_prefix=Tr
             input_seq += "[counterfactual] "
         else:
             input_seq += "[factual] "
-    # if is_question:
-        # input_seq += "Question: {}".format(context)
     input_seq += context.strip()
     if choices is not None:
-        # input_seq += " Answer Choices: {}".format(choices.strip())
         input_seq += " \\n {}".format(choices.strip())
-    # else:
-        # input_seq += "Statement: {}".format(context)
-        # input_seq += context.strip()
     return input_seq
 
 def format_output(explanation, answer, counterfactual=False, without_explanation=False, add_task_prefix=True):
@@ -110,9 +102,6 @@ def format_output(explanation, answer, counterfactual=False, without_explanation
 
     if not without_explanation:
         output_seq += explanation.strip()
-    # if is_statement:
-    #     output_seq += ' So the statement is '
-    # else:
     output_seq += ' So the answer is '
     output_seq_with_answer = output_seq + answer.strip()
     return output_seq_with_answer, output_seq.strip()

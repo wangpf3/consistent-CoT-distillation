@@ -13,10 +13,23 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from transformers import set_seed, AutoConfig, AutoTokenizer, AutoModelForSeq2SeqLM, get_linear_schedule_with_warmup, get_constant_schedule_with_warmup
 from transformers.optimization import Adafactor
 
-from utils import get_logger
 from data_helper import get_tensor_dataset, load_raw_dataset, format_input, format_output, Data_Collator_for_Training
-from generate import generation, generation_with_prefix
+from generate_utils import generation, generation_with_prefix
 
+import logging
+def get_logger(name, log_path=None):
+    
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s: %(message)s', datefmt='%Y/%m/%d %H:%M:%S')
+
+    if log_path:
+        handler = logging.FileHandler(log_path, 'w')
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        
+    return logger
 
 def evaluate(dataset, model, args):
 
@@ -76,18 +89,15 @@ def inference(dataset, output_path, model, tokenizer, args):
         batch_input.append(input_seq)
         batch_output_prefix.append(output_prefix)
 
-        if len(batch_input) == args.eval_batch_size:
+        if len(batch_input) == args.eval_batch_size or example_idx == len(dataset) - 1:
             inputs = tokenizer(batch_input, padding='max_length', max_length=args.max_enc_length, truncation=True, return_tensors='pt').to(args.device)
             decoder_input_ids = tokenizer(batch_output_prefix, add_special_tokens=False, return_tensors='pt').to(args.device).input_ids
-            # batch_output = generation(inputs, model, tokenizer, args)
             batch_output = generation_with_prefix(inputs, decoder_input_ids, model, tokenizer, args)
             for example, output in zip(batch_example, batch_output):
                 answer_prefix = "So the answer is "
                 generation_split = output.split(answer_prefix)
                 generated_explanation.append(generation_split[0].strip())
                 if len(generation_split) == 1:
-                    # if output_path is not None:
-                    #     fw.write(json.dumps({"generation": output})+'\n')
                     continue
                 explanation = generation_split[0].strip()
                 prediction = generation_split[1].strip()
@@ -114,43 +124,6 @@ def inference(dataset, output_path, model, tokenizer, args):
         example_idx += 1
         if args.debug and example_idx > 50:
             break
-
-    if len(batch_input) > 0:
-        inputs = tokenizer(batch_input, padding='max_length', max_length=args.max_enc_length, truncation=True, return_tensors='pt').to(args.device)
-        decoder_input_ids = tokenizer(batch_output_prefix, add_special_tokens=False, return_tensors='pt').to(args.device).input_ids
-        batch_output = generation_with_prefix(inputs, decoder_input_ids, model, tokenizer, args)
-        # batch_output = generation(inputs, model, tokenizer, args)
-        for example, output in zip(batch_example, batch_output):
-            # answer_prefix = "So the statement is " if "statement" in example else "So the answer is "
-            answer_prefix = "So the answer is "
-            generation_split = output.split(answer_prefix)
-            generated_explanation.append(generation_split[0].strip())
-            if len(generation_split) == 1:
-                continue
-            explanation = generation_split[0].strip()
-            prediction = generation_split[1].strip()
-            if prediction == example.answer:
-                fw.write(json.dumps({"generation": output})+'\n')
-                accuracy += 1
-
-            if output_path is not None:
-                output_example = {"id": example.qid}
-                output_example["question"] = example.question
-                output_example["answer"] = prediction
-                if example.choices is not None:
-                    output_example["choices"] = [span.split(') ')[1].strip() for span in example.choices.split('(')[1:]]
-                else:
-                    if example.is_statement:
-                        output_example["choices"] = ["false", "true"]
-                    else:
-                        output_example["choices"] = ["no", "yes"]
-                if not args.without_explanation:
-                    output_example["explanation"] = explanation
-                
-                fw.write(json.dumps(output_example)+'\n')
-        batch_input = []
-        batch_example = []
-        batch_output_prefix = []
 
     if output_path is not None:
         fw.close()
@@ -185,7 +158,6 @@ def inference_with_perturb(dataset, explanations, model, tokenizer, args, replac
     model.eval()
     for example in tqdm(dataset):
         input_seq = format_input(example.question, example.choices)
-            # answer_prefix = " So the statement is"
         answer_prefix = " So the answer is"
         answer_prefix_ids = tokenizer.encode(answer_prefix, add_special_tokens=False)
 
@@ -238,7 +210,6 @@ def main(args, seed):
         train_dataloader_counterfactual = DataLoader(trainset1, collate_fn=None, sampler=train_sampler1, batch_size=args.train_batch_size)
 
     devset = get_tensor_dataset('dev', tokenizer, args)
-    # devset = load_raw_dataset('dev', args)
 
     # ----------------------------------------------------- #
     # optimization
@@ -261,7 +232,6 @@ def main(args, seed):
                     scale_parameter=False,
                     warmup_init=False
                 )
-    # optimizer = torch.optim.AdamW(optimizer_grouped_parameters, eps=1e-6, lr=args.learning_rate)
 
     num_update_steps_per_epoch = len(train_dataloader)
     t_total = num_update_steps_per_epoch // args.grad_step * args.num_epoch
@@ -273,7 +243,6 @@ def main(args, seed):
     model_ckpt = os.path.join(args.save_dir, 'model_seed{}.ckpt'.format(seed))
     output_path = os.path.join(args.save_dir, 'validation_seed{}.jsonl'.format(seed))
     global_step = 0
-    best_dev_acc = 0
     best_dev_loss = 1e19
     step_nogress = 0
     optimizer.zero_grad()
@@ -340,27 +309,22 @@ def main(args, seed):
         log = 'Epoch: {:03d} Train loss: {:.4f} Counterfacual loss: {:.4f}'
         logger.info(log.format(epoch, train_loss, counterfactual_loss))
 
-        # accuracy, explanations = inference(devset, output_path, model, tokenizer, args)
-        # log = 'Epoch: {:03d}, dev accuracy: {:.4f}'
-        # if accuracy >= best_dev_acc:
         dev_result = evaluate(devset, model, args)
         log = 'Epoch: {:03d}, dev loss {:.4f}, perplexity {:.4f}'
         if dev_result["loss"] < best_dev_loss:
             torch.save({'ckpt': model.state_dict(), 'args': args}, model_ckpt)
             log += ' best'
-            # best_dev_acc = accuracy 
             best_dev_loss = dev_result["loss"]
             step_nogress = 0
         else:
             step_nogress += 1
         logger.info(log.format(epoch, dev_result["loss"], dev_result["perplexity"]))
-        # logger.info(log.format(epoch, accuracy))
         if step_nogress > args.num_epoch_early_stopping and global_step > warmup_steps:
             break
 
     return_result = {}
     model.load_state_dict(torch.load(model_ckpt)['ckpt'])
-    for split in ['test', 'dev', 'train']:
+    for split in ['test']:
         testset = load_raw_dataset(split, args)
         output_path = os.path.join(args.save_dir, '{}_seed{}.jsonl'.format(split, seed))
 
